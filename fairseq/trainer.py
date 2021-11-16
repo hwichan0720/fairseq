@@ -1070,6 +1070,8 @@ class Trainer(object):
             logging_outputs = self._xla_markstep_and_send_to_cpu(logging_outputs)
         logging_output = self._reduce_and_log_stats(logging_outputs, sample_size)
 
+        logging_output['confidences'] = logging_outputs[0]['confidences']
+        logging_output['sent_bleu'] = logging_outputs[0]['sent_bleu']
         return logging_output
 
     def zero_grad(self):

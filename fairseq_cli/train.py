@@ -23,6 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("fairseq_cli.train")
 
+import pandas as pd
 import numpy as np
 import torch
 from fairseq import (
@@ -389,7 +390,7 @@ def validate_and_save(
     # Validate
     valid_losses = [None]
     if do_validate:
-        valid_losses = validate(cfg, trainer, task, epoch_itr, valid_subsets)
+        valid_losses, valid_confidences, valid_bleus = validate(cfg, trainer, task, epoch_itr, valid_subsets)
 
     should_stop |= should_stop_early(cfg, valid_losses[0])
 
@@ -398,6 +399,22 @@ def validate_and_save(
         checkpoint_utils.save_checkpoint(
             cfg.checkpoint, trainer, epoch_itr, valid_losses[0]
         )
+
+        # save confidence
+        for n, subset in enumerate(valid_subsets):
+            for metric in ['conf', 'bleu']:
+                csv_path = f'{cfg.checkpoint.save_dir}/{subset}.{metric}.csv'
+                if os.path.isfile(csv_path):
+                    df = pd.read_csv(csv_path)
+                else:
+                    df = pd.DataFrame()
+                
+                if metric == 'conf':
+                    scores = valid_confidences
+                else:
+                    scores = valid_bleus
+                df.loc[:, epoch_itr.epoch] = scores[n]
+                df.to_csv(csv_path, index=False)
 
     return valid_losses, should_stop
 
@@ -422,6 +439,8 @@ def validate(
 
     trainer.begin_valid_epoch(epoch_itr.epoch)
     valid_losses = []
+    valid_confidences = []
+    valid_bleus = []
     for subset in subsets:
         logger.info('begin validation on "{}" subset'.format(subset))
 
@@ -455,11 +474,22 @@ def validate(
 
         # create a new root metrics aggregator so validation metrics
         # don't pollute other aggregators (e.g., train meters)
+        confidences = []
+        bleus = []
+        sent_idxs = []
         with metrics.aggregate(new_root=True) as agg:
             for i, sample in enumerate(progress):
                 if cfg.dataset.max_valid_steps is not None and i > cfg.dataset.max_valid_steps:
                     break
-                trainer.valid_step(sample)
+                logging_output = trainer.valid_step(sample)
+                sent_idxs.extend(sample['id'].to('cpu').detach().numpy().copy())
+                confidences.extend(logging_output['confidences'])
+                bleus.extend(logging_output['sent_bleu'])
+
+        sorted_confidences = [x for _, x in sorted(zip(sent_idxs, confidences))]
+        sorted_bleus = [x for _, x in sorted(zip(sent_idxs, bleus))]
+        valid_confidences.append(sorted_confidences)
+        valid_bleus.append(sorted_bleus)
 
         # log validation stats
         stats = get_valid_stats(cfg, trainer, agg.get_smoothed_values())
@@ -470,7 +500,7 @@ def validate(
         progress.print(stats, tag=subset, step=trainer.get_num_updates())
 
         valid_losses.append(stats[cfg.checkpoint.best_checkpoint_metric])
-    return valid_losses
+    return valid_losses, valid_confidences, valid_bleus
 
 
 def get_valid_stats(

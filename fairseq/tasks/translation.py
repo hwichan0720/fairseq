@@ -382,9 +382,10 @@ class TranslationTask(FairseqTask):
     def valid_step(self, sample, model, criterion):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
         if self.cfg.eval_bleu:
-            bleu = self._inference_with_bleu(self.sequence_generator, sample, model)
+            bleu, sent_bleus = self._inference_with_bleu(self.sequence_generator, sample, model)
             logging_output["_bleu_sys_len"] = bleu.sys_len
             logging_output["_bleu_ref_len"] = bleu.ref_len
+            logging_output["sent_bleu"] = sent_bleus
             # we split counts into separate entries so that they can be
             # summed efficiently across workers using fast-stat-sync
             assert len(bleu.counts) == EVAL_BLEU_ORDER
@@ -490,4 +491,8 @@ class TranslationTask(FairseqTask):
         if self.cfg.eval_tokenized_bleu:
             return sacrebleu.corpus_bleu(hyps, [refs], tokenize="none")
         else:
-            return sacrebleu.corpus_bleu(hyps, [refs])
+            '''
+            hyps, refs に一文ずつ入ってる
+            '''
+            sent_bles = [sacrebleu.corpus_bleu([sys], [[gold]]).score for sys, gold in zip(hyps, refs)]
+            return sacrebleu.corpus_bleu(hyps, [refs]), sent_bles

@@ -222,6 +222,9 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             alignment_heads=alignment_heads,
         )
 
+        '''
+        output_layer (self.output_projection) は dim に線形変換しているだけなので、x は確率ではない
+        '''
         if not features_only:
             x = self.output_layer(x)
         return x, extra

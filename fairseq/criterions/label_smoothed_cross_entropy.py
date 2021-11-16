@@ -76,8 +76,38 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
+
+        '''
+        self.padding_idx (1)
+        sample['id'] = 文id (nsentences)
+        sampel['target'] = ターゲットトークンid (nsentences × 最長の文のトークン数だと思う。それ以下の文長には padding)
+        
+        probs = 生成確率 (nsentences × 最長の文のトークン数 × dim)
+        '''
         net_output = model(**sample["net_input"])
-        loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
+
+        # calculate sentence confidence (average generate probabilities of target tokens)
+        def cal_conf(probs, target_tokens):
+            '''
+            @input
+                probs = probs
+                target_tokens = sample['target']
+            @output
+                sent_confs (nsentences)
+            '''
+            probs = probs.to('cpu').detach().numpy().copy()
+            sent_confs = []
+            for sent_id, gold_token_ids in enumerate(target_tokens):
+                gold_probs = []
+                for token_id, gold_token_id in enumerate(gold_token_ids):
+                    if gold_token_id == self.padding_idx:
+                        break
+                    gold_probs.append(probs[sent_id][token_id][gold_token_id])
+                sent_confs.append(sum(gold_probs)/len(gold_probs))
+            return sent_confs
+
+        loss, nll_loss, probs = self.compute_loss(model, net_output, sample, reduce=reduce)
+        confidences = cal_conf(probs, sample['target'])
         sample_size = (
             sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
         )
@@ -87,6 +117,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
+            "confidences": confidences
         }
         if self.report_accuracy:
             n_correct, total = self.compute_accuracy(model, net_output, sample)
@@ -96,6 +127,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
 
     def get_lprobs_and_target(self, model, net_output, sample):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
+        probs = torch.exp(lprobs)
         target = model.get_targets(sample, net_output)
         if self.ignore_prefix_size > 0:
             if getattr(lprobs, "batch_first", False):
@@ -104,10 +136,10 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
             else:
                 lprobs = lprobs[self.ignore_prefix_size :, :, :].contiguous()
                 target = target[self.ignore_prefix_size :, :].contiguous()
-        return lprobs.view(-1, lprobs.size(-1)), target.view(-1)
+        return lprobs.view(-1, lprobs.size(-1)), probs, target.view(-1)
 
     def compute_loss(self, model, net_output, sample, reduce=True):
-        lprobs, target = self.get_lprobs_and_target(model, net_output, sample)
+        lprobs, probs, target = self.get_lprobs_and_target(model, net_output, sample)
         loss, nll_loss = label_smoothed_nll_loss(
             lprobs,
             target,
@@ -115,7 +147,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
             ignore_index=self.padding_idx,
             reduce=reduce,
         )
-        return loss, nll_loss
+        return loss, nll_loss, probs
 
     def compute_accuracy(self, model, net_output, sample):
         lprobs, target = self.get_lprobs_and_target(model, net_output, sample)
